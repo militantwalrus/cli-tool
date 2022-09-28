@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+
+import argparse
+import importlib
+import sys
+from pathlib import Path, PosixPath
+from typing import Any, List, Tuple
+
+TREE = Path(__file__).resolve().parent.parent
+SRC_DIR = TREE.joinpath("src")
+MODULE_DIR = SRC_DIR.joinpath("modules")
+AVAILABLE_MODULE_PATHS = [ent for ent in MODULE_DIR.iterdir() if ent.is_dir()]
+
+sys.path.append(str(TREE))  # allow tool & modules to import from src.whatever
+from src.command import list_commands  # because now we've got src in the path
+
+USAGE = """cli-tool [-h] [module] [command]
+
+Experimental cli-tool implementation
+""" + list_commands(AVAILABLE_MODULE_PATHS)
+
+
+def parse_args() -> Tuple[argparse.ArgumentParser, List[str]]:
+    """
+    Set up parser args for each module name - to have a useful .help()
+    Return the parser (so it can be used to .help()) and the cli elements
+    """
+    parser = argparse.ArgumentParser(prog="cli-tool", usage=USAGE)
+    parser.add_argument("module", nargs="?", help="CLI-Tool Module", default="")
+    parser.add_argument("command", nargs="?", help="Module command to run", default="")
+    parser.add_argument("--list", action="store_true", help="List modules and commands", default="")
+
+    return parser, sys.argv[1:]
+
+
+def available_module_names() -> List[PosixPath]:
+    return sorted([ent.parts[-1] for ent in AVAILABLE_MODULE_PATHS])
+
+
+def find_module(modname: str) -> PosixPath:
+    for ent in AVAILABLE_MODULE_PATHS:
+        if ent.parts[-1] == modname:
+            return ent
+
+
+if __name__ == "__main__":
+    try:
+        parser, args = parse_args()
+
+        # remove -h and --help from args (we can check sys.argv at module and command level)
+        _help = False
+        for h in ("-h", "--help"):
+            if h in args:
+                _help = True
+                args.remove(h)
+
+        opts, args = parser.parse_known_args(args)
+        
+        if not opts.module:
+            if _help:  # catch the case of $ cli-tool --help
+                parser.print_help()
+                sys.exit()
+            if opts.list:
+                print(list_commands(AVAILABLE_MODULE_PATHS))
+                sys.exit()
+
+        mod_dir = find_module(opts.module)
+        if not mod_dir:
+            print(f"Module '{opts.module}' not found", file=sys.stderr)
+            print(f"Available modules are: {', '.join(available_module_names())}", file=sys.stderr)
+            sys.exit(1)
+
+        sys.path.append(str(mod_dir))  # put module dir in path
+
+        modname = f"src.modules.{opts.module}"
+        importlib.import_module(modname)
+        cls = getattr(sys.modules[modname], "Commands", None)
+
+        module = cls(opts)  # give module-level --help a chance to operate checked at __init__
+
+        if not opts.command:
+            print(f"Error: No command given for module {opts.module}\n")
+            parser.print_help()
+            sys.exit(1)
+
+        command = getattr(module, opts.command, None)
+        if callable(command) and hasattr(command, "_tool_command"):
+            getattr(module, opts.command)()  # invoke the actual command
+        else:
+            print(f"module '{opts.module}' does not define a '{opts.command}' command", file=sys.stderr)
+            sys.exit(1)
+
+    except Exception as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+
+# vim: et ai sw=4 ts=4 syntax=python
